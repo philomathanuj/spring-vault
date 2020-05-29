@@ -1,0 +1,256 @@
+consul-deployment-guide:
+---------------------------
+1. Download consul
+$ wget https://releases.hashicorp.com/consul/1.7.2/consul_1.7.2_linux_amd64.zip
+2. copy to bin directory
+sudo cp -avr consul /usr/bin
+3. consul agent -dev
+
+4. Start consul ui and see everything is encrypted.
+http://localhost:8500/ui/dc1/services
+
+Now we'll not start consul in dev mode but regular mode:
+-----------
+We'll run the consul agent in server mode by specifying the -server switch:
+----------
+
+consul agent \
+  -server \
+  -bootstrap-expect=1 \
+  -node=agent-one \
+  -bind=172.17.0.1 \
+  -data-dir=/tmp/consul \
+  -config-dir=/etc/consul.d
+
+Now to run one consul agent in client mode:
+-----------------------------
+consul agent \
+  -node=agent-two \
+  -bind=172.20.20.11 \
+  -enable-script-checks=true \
+  -data-dir=/tmp/consul \
+  -config-dir=/etc/consul.d
+
+  You're now ready to create your multi-agent datacenter. Stay in the terminal window where you are ssh-ed into the first VM, and run the consul join command on the Consul server, giving it the bind address of the Consul client.
+
+  $ consul join 172.20.20.11
+
+  In the same window, run consul members again and you will see both agents listed.
+
+  $ consul memebers
+
+  philomathanuj@philomathanuj-Inspiron-5570:~/hashicorp-vault$ consul members
+Node       Address          Status  Type    Build  Protocol  DC   Segment
+agent-one  172.17.0.1:8301  alive   server  1.7.2  2         dc1  <all>
+
+Now put some data in consul:
+---------------------
+consul kv put redis/config/minconns 1
+consul kv put redis/config/maxconns 25
+
+Notice that with the key entered below ("redis/config/users/admin"), you set a flags value of 42. Keys support setting a 64-bit integer flag value that isn't used internally by Consul, but can be used by clients to add metadata to any KV pair.
+consul kv put -flags=42 redis/config/users/admin abcd1234
+
+Query data:
+----------
+consul kv get redis/config/minconns
+
+Query data detailed
+--------------
+ consul kv get -detailed redis/config/users/admin
+
+ List all the keys in the store using the recurse options. Results are returned in lexicographical order.
+ -----------
+ consul kv get -recurse
+
+Delete Key:
+---------
+ consul kv delete redis/config/minconns
+
+ Delete all the keys with the redis prefix using the recurse option
+ --------------
+ consul kv delete -recurse redis
+
+ Modifying existing data:
+ -----------
+ consul kv put foo bar
+Get the updated key:
+--------
+ consul kv get foo
+
+ Put the new value at an extant "path".
+ ----
+ consul kv put foo zip
+
+ check the updated path:
+ -----
+ consul kv get foo
+
+Now let's write them for our app:
+--------------------- 
+consul is not like vault where subdir becomes a profile, here subdir is represented by ${subdir.attribute} in spring boot
+see that name of spring.application.name should match config/{spring.application.name}
+consul kv put config/vault-app/minconns 1
+consul kv put config/vault-app/maxconns 25
+consul kv put config/vault-app/example.name cached-pool
+consul kv put config/vault-app/example.size 2
+
+consul kv put config/vault-app/redis/maxconns 30
+
+To protect consul kv config you need to use token again:
+-------------
+spring.cloud.consul.config.acl-token
+https://cloud.spring.io/spring-cloud-consul/reference/html/appendix.html
+
+
+Now let's use enable acl on our consul agent.
+consul agent -config.dir:  A directory of configuration files to load. Consul will load all files in this directory with the suffix ".json" or ".hcl".
+So create a file agent.hcl with the following :
+--------
+acl = {
+  enabled = true
+  default_policy = "deny"
+  enable_token_persistence = true
+}
+
+-----
+and restart consul agent like below and now acl will be enabled:
+
+consul agent \
+  -server \
+  -bootstrap-expect=1 \
+  -node=agent-one \
+  -bind=172.17.0.1 \
+  -data-dir=/tmp/consul \
+  -config-dir=/etc/consul.d
+
+--
+You'll also start getting vault related errros as vault can't contact the consul anymore:
+agent.http: Request error: method=GET url=/v1/kv/vault/core/poison-pill from=127.0.0.1:36084 error="Permission denied"
+    2020-05-03T18:52:52.603+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/upgrade/1 from=127.0.0.1:36088 error="Permission denied"
+    2020-05-03T18:52:52.804+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/lock from=127.0.0.1:36090 error="Permission denied"
+    2020-05-03T18:52:54.357+0530 [INFO]  agent: Synced node info
+    2020-05-03T18:52:54.762+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/cluster/local/info from=127.0.0.1:36092 error="Permission denied"
+    2020-05-03T18:52:54.762+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/cluster/local/info from=127.0.0.1:36094 error="Permission denied"
+    2020-05-03T18:52:55.305+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/lock from=127.0.0.1:36096 error="Permission denied"
+    2020-05-03T18:52:57.805+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/lock from=127.0.0.1:36098 error="Permission denied"
+    2020-05-03T18:53:00.305+0530 [ERROR] agent.http: Request error: method=GET url=/v1/kv/vault/core/lock from=127.0.0.1:36100 error="Permission denied"
+    2020-05-03T18:53:00.735+0530 [WARN]  agent: Coordinate update blocked by ACLs: accessorID=
+
+then go to a new terminal:
+-----------
+Create the Initial Bootstrap Token
+
+$ consul acl bootstrap
+gives following output:
+
+AccessorID:       39d7b8e9-8cf0-8e7a-7ea4-0baa4b68251f
+SecretID:         b91caa4f-6ac4-9ef7-a98c-6e76392369bf
+Description:      Bootstrap Token (Global Management)
+Local:            false
+Create Time:      2020-05-03 18:53:50.690864748 +0530 IST
+Policies:
+   00000000-0000-0000-0000-000000000001 - global-management
+
+Now to create policies with the token set the following the terminal session:
+export CONSUL_HTTP_TOKEN=b91caa4f-6ac4-9ef7-a98c-6e76392369bf
+You could use the above acl token in your application but as it's not a good practice to use the root token but a specific token with policies, let's create another token.
+
+Apply Individual Tokens to Agents:
+--------------------
+
+Recursive Reads:
+key_prefix "redis/" {
+  policy = "read"
+}
+In the above example, we are allowing any key with the prefix redis/ to be read. If you issued the command consul kv get -recurse redis/ -token=<your token> you would get a list of key/values for redis/.
+
+Write Privileges for One Key
+
+key "vault-app" {
+  policy = "write"
+}
+
+Read Priveleges for one key:
+---------------
+key "counting-app" {
+  policy = "read"
+}
+----------
+1. create a policy file:  vault-app-consul-policy.hcl
+------
+key_prefix "config/vault-app/" {
+  policy = "read"
+}
+
+
+2. Create a policy using above file:
+export CONSUL_HTTP_TOKEN=b91caa4f-6ac4-9ef7-a98c-6e76392369bf
+then:
+----
+consul acl policy create \
+  -name vault-app-consul-policy \
+  -rules @vault-app-consul-policy.hcl
+
+ 3. Create the Agent Token
+
+ $ consul acl token create -description "vault-app consul agent token" \
+  -policy-name vault-app-consul-policy
+
+  The command gives following output:
+  ------------
+  AccessorID:       75653aec-5660-5195-baf0-07b08199e6db
+SecretID:         0dbacaa9-5038-d70e-3a97-e37d1ba9ecfa
+Description:      vault-app consul agent token
+Local:            false
+Create Time:      2020-05-03 19:26:36.848318516 +0530 IST
+Policies:
+   16867d61-a6b2-4da8-d672-650d55ce181b - vault-app-consul-policy
+
+Repeat this process for each agent. It is the responsibility of the operator to save tokens in a secure location; we recommend Vault.
+
+4. Add the Token to the Agent
+consul acl set-agent-token agent "0dbacaa9-5038-d70e-3a97-e37d1ba9ecfa"
+
+5. In the vault.conf file consul section add token: <acl-token> attribute. This will allow vault to connect to consul server running on 8500. Else you will get connect refused error.
+Enable consul ui by adding -ui flag while starting/running consul agent. Now login to the ui, you'll not see any key vaule pairs. So go to token section and provide the acl token after which
+you will start seeing the key value pairs.
+
+
+Note:
+Now from the app perspective, remember that as in vault we have set the acl-token for consul so app will also be able to access secrets. However, without acl token supplied to app, app fails to recognize/read
+the other regular plain text properties stored in in consul. Hence, app also needs to supply an acl token to read those vaules.
+
+
+
+----------------
+
+from app perspective new policy based token:
+---------------
+consul acl policy create \
+  -name vault-app-consul-policy \
+  -rules @vault-app-consul-policy.hcl
+
+consul acl token create -description "vault-app consul agent token" \
+  -policy-name vault-app-consul-policy-new
+
+  philomathanuj@philomathanuj-Inspiron-5570:~/hashicorp-vault$ consul acl token create -description "vault-app consul agent token" \
+>   -policy-name vault-app-consul-policy-new
+AccessorID:       928e86d2-1265-dc63-5fd1-8e6668a59a1d
+SecretID:         959599bb-74bb-b34d-d616-023b5a3811d3
+Description:      vault-app consul agent token
+Local:            false
+Create Time:      2020-05-03 20:36:09.94549911 +0530 IST
+Policies:
+   262de3c1-d71e-5f4c-337e-7ae56c40fa54 - vault-app-consul-policy-new
+
+
+   consul acl set-agent-token agent "959599bb-74bb-b34d-d616-023b5a3811d3"
+
+   Now you will use below in spring-boot app:
+   spring.cloud.consul.config.acl-token=959599bb-74bb-b34d-d616-023b5a3811d3
+
+
+
+
+
